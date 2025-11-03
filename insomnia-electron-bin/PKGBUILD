@@ -6,7 +6,7 @@ _appname=insomnia
 pkgname="$_appname-electron-bin"
 _dirname="Insomnia.Core"
 epoch=1
-pkgver=11.0.1 # renovate: datasource=github-tags depName=Kong/insomnia extractVersion=^core@(?<version>(?!202[0-3]\.).+)$
+pkgver=11.0.1 # renovate: datasource=github-tags depName=Kong/insomnia extractVersion=^core@(?<version>(?:[^2].*|2(?:$|[^0].*)|20(?:$|[^2].*)|202(?:$|[^0-3].*|[0-3](?:$|[^.].*))))
 pkgrel=1
 pkgdesc='Cross-platform HTTP and GraphQL Client'
 #arch=('x86_64' 'aarch64')
