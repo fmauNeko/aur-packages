@@ -1,7 +1,7 @@
 # Maintainer: Florian Maunier <fmauneko@dissidence.ovh>
 # Contributor: Dušan Simić <dusan.simic1810@gmail.com>
 
-_electron=electron35
+_electron=electron38
 _appname=insomnia
 pkgname="$_appname-electron-bin"
 _dirname="Insomnia.Core"
@@ -41,7 +41,7 @@ package() {
 	install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
 
 	if [[ $CARCH == 'x86_64' ]]; then
-		cd "$_dirname-$pkgver-x64"
+		cd "$_dirname-$pkgver"
 	elif [[ $CARCH == 'aarch64' ]]; then
 		cd "$_dirname-$pkgver-arm64"
 	else
