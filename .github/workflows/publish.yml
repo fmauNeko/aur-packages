@@ -47,6 +47,53 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Extract local assets from PKGBUILD
+        id: extract_assets
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          cd "${{ matrix.package }}"
+
+          # Source the PKGBUILD to extract source arrays
+          source PKGBUILD
+
+          # Collect all source entries
+          all_sources=("${source[@]}")
+
+          # Add architecture-specific sources if they exist
+          for arch in "${arch[@]}"; do
+            var_name="source_${arch}[@]"
+            if [[ -v $var_name ]]; then
+              all_sources+=("${!var_name}")
+            fi
+          done
+
+          # Filter for local files (not URLs)
+          local_files=()
+          for src in "${all_sources[@]}"; do
+            # Extract filename from "name::url" syntax
+            file="${src##*::}"
+            # Skip URLs (http://, https://, ftp://, etc.)
+            if [[ ! "$file" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
+              # Check if file exists in package directory
+              if [[ -f "$file" ]]; then
+                local_files+=("$file")
+              fi
+            fi
+          done
+
+          # Convert to newline-delimited list for assets parameter with package path prefix
+          if [ ${#local_files[@]} -gt 0 ]; then
+            echo "assets<<EOF" >> $GITHUB_OUTPUT
+            for file in "${local_files[@]}"; do
+              echo "${{ matrix.package }}/$file" >> $GITHUB_OUTPUT
+            done
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "assets=" >> $GITHUB_OUTPUT
+          fi
+
       - name: Publish package
         uses: KSXGitHub/github-actions-deploy-aur@2ac5a4c1d7035885d46b10e3193393be8460b6f1 # v4.1.1
         with:
@@ -55,3 +102,4 @@ jobs:
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          assets: ${{ steps.extract_assets.outputs.assets }}
