@@ -8,28 +8,50 @@ on:
       - "*/PKGBUILD"
 
 jobs:
-  publish:
+  find-packages:
     runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.find_pkgbuilds.outputs.packages }}
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           fetch-depth: 0
 
-      - name: Find updated package
-        id: find_pkgbuild
+      - name: Find updated packages
+        id: find_pkgbuilds
         run: |
           #!/usr/bin/env bash
           set -euxo pipefail
 
-          echo "pkgbuild=$(git diff --name-only HEAD HEAD~1 "*/.SRCINFO" | head -1 | xargs dirname)" >> $GITHUB_OUTPUT
+          # Get all modified .SRCINFO files and their directories
+          pkgbuilds=$(git diff --name-only HEAD HEAD~1 "*/.SRCINFO" | xargs -I {} dirname {} | sort -u)
+
+          # Convert to JSON array for matrix
+          if [ -n "$pkgbuilds" ]; then
+            echo "packages=$(echo "$pkgbuilds" | jq -R . | jq -sc .)" >> $GITHUB_OUTPUT
+          else
+            echo "packages=[]" >> $GITHUB_OUTPUT
+          fi
+
+  publish:
+    needs: find-packages
+    if: ${{ fromJSON(needs.find-packages.outputs.packages)[0] != null }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: ${{ fromJSON(needs.find-packages.outputs.packages) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
 
       - name: Publish package
         uses: KSXGitHub/github-actions-deploy-aur@2ac5a4c1d7035885d46b10e3193393be8460b6f1 # v4.1.1
-        if: ${{ steps.find_pkgbuild.outputs.pkgbuild != '' }}
         with:
-          pkgname: ${{ steps.find_pkgbuild.outputs.pkgbuild }}
-          pkgbuild: ${{ steps.find_pkgbuild.outputs.pkgbuild }}/PKGBUILD
+          pkgname: ${{ matrix.package }}
+          pkgbuild: ${{ matrix.package }}/PKGBUILD
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
