@@ -83,16 +83,26 @@ jobs:
             fi
           done
 
+          # Generate .gitignore file
+          cat > .gitignore << 'GITIGNORE_EOF'
+          *
+          !PKGBUILD
+          !.SRCINFO
+          GITIGNORE_EOF
+
+          for file in "${local_files[@]}"; do
+            echo "!$file" >> .gitignore
+          done
+
           # Convert to newline-delimited list for assets parameter with package path prefix
+          echo "assets<<EOF" >> $GITHUB_OUTPUT
+          echo "${{ matrix.package }}/.gitignore" >> $GITHUB_OUTPUT
           if [ ${#local_files[@]} -gt 0 ]; then
-            echo "assets<<EOF" >> $GITHUB_OUTPUT
             for file in "${local_files[@]}"; do
               echo "${{ matrix.package }}/$file" >> $GITHUB_OUTPUT
             done
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
-            echo "assets=" >> $GITHUB_OUTPUT
           fi
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Publish package
         uses: KSXGitHub/github-actions-deploy-aur@2ac5a4c1d7035885d46b10e3193393be8460b6f1 # v4.1.1
