@@ -53,11 +53,22 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.ref }}
 
+      - name: Free up disk space
+        if: contains(matrix.package, 'factorio')
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+
       - name: Validate package
         uses: ./.github/actions/aur
         with:
           action: "updpkgsums"
           pkgname: ${{ matrix.package }}
+        env:
+          FACTORIO_LOGIN: ${{ contains(matrix.package, 'factorio') && secrets.FACTORIO_USERNAME || '' }}
+          FACTORIO_TOKEN: ${{ contains(matrix.package, 'factorio') && secrets.FACTORIO_TOKEN || '' }}
 
       - name: Commit
         uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
