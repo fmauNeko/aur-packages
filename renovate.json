@@ -13,7 +13,7 @@
       "customType": "regex",
       "managerFilePatterns": ["/(^|/)PKGBUILD$/"],
       "matchStrings": [
-        "pkgver=(?<currentValue>.*) # renovate: datasource=(?<datasource>.*) depName=(?<depName>.*) extractVersion=(?<extractVersion>.*)"
+        "(?m)^pkgver=(?<currentValue>\\S+) # renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?$"
       ],
       "extractVersionTemplate": "{{#if extractVersion}}{{{extractVersion}}}{{else}}^v?(?<version>.*)${{/if}}"
     }
