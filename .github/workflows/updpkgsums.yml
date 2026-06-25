@@ -47,11 +47,19 @@ jobs:
       matrix:
         package: ${{ fromJSON(needs.find-packages.outputs.packages) }}
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RENOVATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
           ref: ${{ github.ref }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Free up disk space
         if: contains(matrix.package, 'factorio')
@@ -73,4 +81,5 @@ jobs:
       - name: Commit
         uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
         with:
+          commit_message: "chore(${{ matrix.package }}): update checksums and .SRCINFO [skip ci]"
           file_pattern: "*/PKGBUILD */.SRCINFO"
