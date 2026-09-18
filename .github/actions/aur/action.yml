@@ -1,21 +1,63 @@
 name: 'Arch Linux User Repository (AUR) GitHub Action'
-description: ''
+description: 'Runs makepkg-based AUR package preparation and build steps inside an architecture-appropriate Arch container'
 author: 'JamieMagee'
 branding:
   icon: 'package'
   color: 'blue'
 
 inputs:
-  action:
-    description: "Which action to take. Can be 'updpkgsums' or 'publish'"
+  mode:
+    description: "Which action to take. Either 'prepare' (updpkgsums + regenerate .SRCINFO) or 'build' (makepkg)."
     required: true
-  pkgname:
-    description: ''
+  packages:
+    description: 'Space-separated list of package directories to operate on.'
     required: true
+  image:
+    description: 'Fully-qualified, digest-pinned container image to run in.'
+    required: true
+  arch:
+    description: "Expected CARCH inside the container. Required for mode 'build'; asserted before building."
+    required: false
+    default: ''
+  factorio-login:
+    description: 'Factorio account name. Only needed to build the factorio packages.'
+    required: false
+    default: ''
+  factorio-token:
+    description: 'Factorio API token. Only needed to build the factorio packages.'
+    required: false
+    default: ''
 
 runs:
-  using: docker
-  image: 'Dockerfile'
-  args:
-    - ${{ inputs.action }}
-    - ${{ inputs.pkgname }}
+  using: composite
+  steps:
+    - name: Run ${{ inputs.mode }} in ${{ inputs.image }}
+      shell: bash
+      run: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Every JS action (checkout, artifacts) stays on the host runner; only
+        # makepkg runs in the container. Keeps us off unknown node/glibc
+        # behaviour in third-party Arch images.
+        docker run --rm \
+          --volume "${GITHUB_WORKSPACE}:/workspace" \
+          --volume "${ACTION_PATH}/entrypoint.sh:/entrypoint.sh:ro" \
+          --workdir /workspace \
+          --env INPUT_MODE \
+          --env INPUT_PACKAGES \
+          --env INPUT_ARCH \
+          --env FACTORIO_LOGIN \
+          --env FACTORIO_TOKEN \
+          "${INPUT_IMAGE}" \
+          /entrypoint.sh
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_PACKAGES: ${{ inputs.packages }}
+        INPUT_IMAGE: ${{ inputs.image }}
+        INPUT_ARCH: ${{ inputs.arch }}
+        # Taken as inputs rather than inherited env: step-level `env:` on a
+        # `uses:` step is not reliably visible inside a composite action.
+        FACTORIO_LOGIN: ${{ inputs.factorio-login }}
+        FACTORIO_TOKEN: ${{ inputs.factorio-token }}

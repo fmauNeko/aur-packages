@@ -21,9 +21,7 @@ b2sums=('e92c56a60a2c393d8e9caef3d693dabef06321b20fc14b8978eba8255491b3a5cdbe646
 
 # Upstream is inconsistent: the download endpoint uses "linux64" while the
 # tarball it serves is named "..._linux_...", hence the two separate variables.
-# CARCH is set by makepkg; the fallback keeps the PKGBUILD sourceable on its own
-# (CI sources it under `set -u` just to read depends/makedepends).
-case "${CARCH:-$(uname -m)}" in
+case "$CARCH" in
   x86_64)
     _dlplatform=linux64
     _pkgplatform=linux
@@ -33,6 +31,10 @@ case "${CARCH:-$(uname -m)}" in
     _dlplatform=linux-arm64
     _pkgplatform=linux-arm64
     _bindir=arm64
+    ;;
+  *)
+    echo "Unsupported architecture: $CARCH" >&2
+    exit 1
     ;;
 esac
 
