@@ -55,19 +55,12 @@ jobs:
 
           cd "${{ matrix.package }}"
 
-          # Source the PKGBUILD to extract source arrays
-          source PKGBUILD
-
-          # Collect all source entries
-          all_sources=("${source[@]}")
-
-          # Add architecture-specific sources if they exist
-          for arch in "${arch[@]}"; do
-            var_name="source_${arch}[@]"
-            if [[ -v $var_name ]]; then
-              all_sources+=("${!var_name}")
-            fi
-          done
+          # Do NOT source the PKGBUILD here: that needs CARCH and executes
+          # arbitrary shell. .SRCINFO already flattens every arch-specific
+          # array into explicit `source_<arch> = ...` lines.
+          mapfile -t all_sources < <(
+            sed -n 's/^[[:space:]]*source\(_[a-z0-9_]\+\)\? = //p' .SRCINFO
+          )
 
           # Filter for local files (not URLs)
           local_files=()
