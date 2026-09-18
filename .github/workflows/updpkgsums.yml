@@ -9,57 +9,137 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
+
+# The factorio packages pull a ~4GB tarball per architecture, so superseded
+# pushes must stop downloading instead of running to completion.
+concurrency:
+  group: updpkgsums-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=docker depName=docker.io/library/archlinux
+  IMAGE_X86_64: "docker.io/library/archlinux:base-devel@sha256:4894f5a268c696fad671966f383175a13faf433c9d9c88cdd4e32eaa2d18838b"
+  # renovate: datasource=docker depName=docker.io/menci/archlinuxarm
+  IMAGE_AARCH64: "docker.io/menci/archlinuxarm:base-devel@sha256:f5a4ad61e2f40df97b08864906ca986431ac4197f5680b7ceb83db9860d736f6"
 
 jobs:
-  find-packages:
-    runs-on: ubuntu-latest
+  # Runs updpkgsums once, on amd64, for every changed package. makepkg -g
+  # emits checksums for all declared architectures (not just the host's), so
+  # this single job produces the authoritative PKGBUILD/.SRCINFO that every
+  # build job then verifies. Deliberately holds no secrets: regenerating
+  # .SRCINFO executes arbitrary PKGBUILD shell.
+  prepare:
+    runs-on: ubuntu-24.04
     outputs:
-      packages: ${{ steps.find_pkgbuilds.outputs.packages }}
+      packages: ${{ steps.find.outputs.packages }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           ref: ${{ github.ref }}
+          persist-credentials: false
 
       - name: Find updated packages
-        id: find_pkgbuilds
+        id: find
         run: |
           #!/usr/bin/env bash
           set -euxo pipefail
 
           # Get all modified PKGBUILDs and their directories
-          pkgbuilds=$(git diff --name-only origin/main origin/${GITHUB_HEAD_REF} "*PKGBUILD" | xargs -I {} dirname {} | sort -u)
+          pkgbuilds=$(git diff --name-only origin/main "origin/${GITHUB_HEAD_REF}" "*PKGBUILD" | xargs -I {} dirname {} | sort -u)
 
-          # Convert to JSON array for matrix
           if [ -n "$pkgbuilds" ]; then
-            echo "packages=$(echo "$pkgbuilds" | jq -R . | jq -sc .)" >> $GITHUB_OUTPUT
+            echo "packages=$(echo "$pkgbuilds" | jq -R . | jq -sc .)" >>"$GITHUB_OUTPUT"
+            echo "list=$(echo "$pkgbuilds" | tr '\n' ' ' | sed 's/ $//')" >>"$GITHUB_OUTPUT"
           else
-            echo "packages=[]" >> $GITHUB_OUTPUT
+            echo "packages=[]" >>"$GITHUB_OUTPUT"
+            echo "list=" >>"$GITHUB_OUTPUT"
           fi
 
-  updpkgsums:
-    needs: find-packages
-    if: ${{ fromJSON(needs.find-packages.outputs.packages)[0] != null }}
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        package: ${{ fromJSON(needs.find-packages.outputs.packages) }}
-    steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      - name: Regenerate checksums and .SRCINFO
+        if: ${{ steps.find.outputs.list != '' }}
+        uses: ./.github/actions/aur
         with:
-          client-id: ${{ vars.RENOVATE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+          mode: prepare
+          packages: ${{ steps.find.outputs.list }}
+          image: ${{ env.IMAGE_X86_64 }}
 
+      # The matrix is built from the .SRCINFO just regenerated above, never
+      # from the committed one: a PR may add an architecture to PKGBUILD only,
+      # and the [skip ci] writeback would stop a corrected run from happening.
+      - name: Build architecture matrix
+        id: matrix
+        if: ${{ steps.find.outputs.list != '' }}
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          entries=()
+          paths=()
+
+          for pkg in ${{ steps.find.outputs.list }}; do
+            srcinfo="${pkg}/.SRCINFO"
+            [[ -f $srcinfo ]] || { echo "::error::${pkg}: .SRCINFO missing after prepare"; exit 1; }
+
+            mapfile -t arches < <(sed -n 's/^[[:space:]]*arch = //p' "$srcinfo")
+            (( ${#arches[@]} )) || { echo "::error::${pkg}: .SRCINFO declares no arch"; exit 1; }
+
+            for a in "${arches[@]}"; do
+              case "$a" in
+                any | x86_64) arch=x86_64;  runner=ubuntu-24.04;     image=$IMAGE_X86_64 ;;
+                aarch64)      arch=aarch64; runner=ubuntu-24.04-arm; image=$IMAGE_AARCH64 ;;
+                *) echo "::error::${pkg}: unsupported arch '${a}' - add a runner/image mapping"; exit 1 ;;
+              esac
+              entries+=("$(jq -nc \
+                --arg package "$pkg" --arg arch "$arch" --arg runner "$runner" --arg image "$image" \
+                '{package:$package, arch:$arch, runner:$runner, image:$image}')")
+            done
+
+            paths+=("${pkg}/PKGBUILD" "${pkg}/.SRCINFO")
+          done
+
+          # unique collapses arch=any (and any duplicate) to a single job.
+          matrix=$(printf '%s\n' "${entries[@]}" | jq -sc '{include: unique}')
+          echo "matrix=${matrix}" >>"$GITHUB_OUTPUT"
+          printf 'artifact_paths<<EOF\n%s\nEOF\n' "$(printf '%s\n' "${paths[@]}")" >>"$GITHUB_OUTPUT"
+
+          echo "Generated matrix:"
+          jq <<<"$matrix"
+
+      - name: Upload prepared PKGBUILDs
+        if: ${{ steps.find.outputs.list != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prepared-pkgbuilds
+          # .SRCINFO is a dotfile and would otherwise be silently dropped.
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ steps.matrix.outputs.artifact_paths }}
+
+  # One native job per (package, architecture). These only verify that the
+  # prepared PKGBUILD actually builds; none of them writes back.
+  build:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.matrix != '' && fromJSON(needs.prepare.outputs.matrix).include[0] != null }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
           ref: ${{ github.ref }}
-          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Download prepared PKGBUILDs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: prepared-pkgbuilds
 
       - name: Free up disk space
         if: contains(matrix.package, 'factorio')
@@ -68,18 +148,50 @@ jobs:
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache
+          df -h /
 
-      - name: Validate package
+      - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         uses: ./.github/actions/aur
         with:
-          action: "updpkgsums"
-          pkgname: ${{ matrix.package }}
-        env:
-          FACTORIO_LOGIN: ${{ contains(matrix.package, 'factorio') && secrets.FACTORIO_USERNAME || '' }}
-          FACTORIO_TOKEN: ${{ contains(matrix.package, 'factorio') && secrets.FACTORIO_TOKEN || '' }}
+          mode: build
+          packages: ${{ matrix.package }}
+          image: ${{ matrix.image }}
+          arch: ${{ matrix.arch }}
+          factorio-login: ${{ contains(matrix.package, 'factorio') && secrets.FACTORIO_USERNAME || '' }}
+          factorio-token: ${{ contains(matrix.package, 'factorio') && secrets.FACTORIO_TOKEN || '' }}
+
+  # Sole writer. Runs once, after every architecture has built, so parallel
+  # arch jobs cannot race - and neither can two changed packages, which the
+  # previous per-package matrix could.
+  commit:
+    needs: [prepare, build]
+    if: ${{ needs.prepare.outputs.packages != '[]' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.RENOVATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+
+      - name: Checkout PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The PR head branch, not the merge ref - committing from a detached
+          # HEAD is what the old workflow warned about on every run.
+          ref: ${{ github.head_ref }}
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Download prepared PKGBUILDs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: prepared-pkgbuilds
 
       - name: Commit
         uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7
         with:
-          commit_message: "chore(${{ matrix.package }}): update checksums and .SRCINFO [skip ci]"
+          commit_message: "chore: update checksums and .SRCINFO [skip ci]"
           file_pattern: "*/PKGBUILD */.SRCINFO"
